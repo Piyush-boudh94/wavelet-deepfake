@@ -1,0 +1,66 @@
+# Interactive workspace pod for WMamba development.
+#
+# Claims the ENTIRE namespace quota (16 CPU / 32 Gi / 1x mig-1g.18gb), because that
+# is all there is -- see docs/ENVIRONMENT.md. While this is running, no training Job
+# can be scheduled. Delete it before submitting Phase 1 training:
+#
+#   kubectl delete -f scripts/k8s/dev-pod.yaml
+#
+# Image is the -runtime variant (no nvcc/gcc). That is deliberate: every dependency
+# in this project installs from a prebuilt wheel, verified in vendor/wheels/.
+# If a source build ever becomes necessary, switch to the -devel tag instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wmamba-dev
+  namespace: dgx-s-bmu-cse-240577-restricted
+  labels: {app: wmamba-dev, project: wmamba}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # never let two replicas contend for the single MIG slice
+  selector:
+    matchLabels: {app: wmamba-dev}
+  template:
+    metadata:
+      labels: {app: wmamba-dev, project: wmamba}
+    spec:
+      # Run as the real user so everything written to the NFS home is owned by you,
+      # not root. The previous pod ran as uid 0, which is how ~/research ended up
+      # root-owned and unwritable from the head node.
+      securityContext:
+        runAsUser: 1109
+        runAsGroup: 1109
+        fsGroup: 1109
+      containers:
+        - name: workspace
+          image: pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime
+          command: ["sleep", "infinity"]
+          env:
+            - {name: HOME,       value: /home/dgx-s-bmu-cse-240577}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+            # uid 1109 has no /etc/passwd entry inside the image, so
+            # getpass.getuser() raises KeyError. torch>=2.10 calls it while
+            # resolving the inductor cache dir, which crashes `import torch`
+            # paths. Setting USER/LOGNAME satisfies getpass without needing
+            # to mutate /etc/passwd (which we cannot do unprivileged).
+            - {name: USER,    value: dgx-s-bmu-cse-240577}
+            - {name: LOGNAME, value: dgx-s-bmu-cse-240577}
+            - {name: TORCHINDUCTOR_CACHE_DIR, value: /home/dgx-s-bmu-cse-240577/.cache/torchinductor}
+            - {name: TRITON_CACHE_DIR,        value: /home/dgx-s-bmu-cse-240577/.cache/triton}
+            # Keep every cache on NFS; the container filesystem is ephemeral.
+            - {name: PIP_CACHE_DIR, value: /home/dgx-s-bmu-cse-240577/.cache/pip}
+            - {name: TORCH_HOME,    value: /home/dgx-s-bmu-cse-240577/.cache/torch}
+            - {name: HF_HOME,       value: /home/dgx-s-bmu-cse-240577/.cache/huggingface}
+          resources:
+            requests: {cpu: "16", memory: 32Gi, nvidia.com/mig-1g.18gb: "1"}
+            limits:   {cpu: "16", memory: 32Gi, nvidia.com/mig-1g.18gb: "1"}
+          volumeMounts:
+            - {name: home, mountPath: /home/dgx-s-bmu-cse-240577}
+            - {name: dshm, mountPath: /dev/shm}
+      volumes:
+        - name: home
+          nfs: {server: 10.141.255.254, path: /home/dgx-s-bmu-cse-240577}
+        # Default /dev/shm is 64 MB, which deadlocks PyTorch DataLoader workers.
+        # SBI preprocessing is CPU-heavy and will use many workers.
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 8Gi}

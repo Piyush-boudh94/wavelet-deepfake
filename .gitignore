@@ -1,0 +1,42 @@
+# --- Never commit data, weights, logs, or secrets ---
+data/
+checkpoints/
+logs/
+runs/
+outputs/
+vendor/wheels/*.whl
+
+# Secrets. .env holds real values; .env.example is the committed template.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+kubeconfig
+.kube/
+# Kubernetes credentials must never enter the repo (see docs/SECURITY.md)
+**/kubeconfig*
+**/*service-account*.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Scratch
+scratch/
+*.tmp
