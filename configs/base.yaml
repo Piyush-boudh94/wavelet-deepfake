@@ -82,19 +82,18 @@ train:
   lr_decay_start_epoch: 100     # [PAPER] linear decay begins at epoch 100
   loss: cross_entropy           # [PAPER] Sec 3.1, deliberately plain. No auxiliary losses.
 
-  # ---- [CLUSTER] the one substantive deviation --------------------------------
-  # Paper: batch 64 in ~30 GB of VRAM. This MIG slice has 16.0 GiB usable.
-  # 64 will OOM. We preserve the paper's EFFECTIVE batch of 64 via gradient
-  # accumulation, so optimizer semantics are unchanged:
-  #     micro_batch_size * grad_accum_steps == 64
-  # micro_batch_size below is a STARTING ESTIMATE. Run
-  #     scripts/benchmark_batch.py
-  # to measure the true peak allocation and set the largest value that fits
-  # under train.vram_budget_gib. Do not trust this number until measured.
-  micro_batch_size: 16
-  grad_accum_steps: 4
+  # ---- [CLUSTER] MEASURED on the mig-1g.18gb slice, 2026-08-01 ----------------
+  # scripts/benchmark_batch.py, full train steps (fwd+bwd+AdamW+clip) under
+  # bf16 autocast, pretrained weights loaded:
+  #   batch 64 -> peak 13.08 GiB of 16.0 (81.8%), headroom 2.92 GiB (18%)
+  #   (scaling was linear: 32 -> 6.91 GiB, 48 -> 10.03 GiB)
+  # The paper's ~30 GB at batch 64 is fp32; bf16 halves activations, so the
+  # full paper batch fits and NO gradient accumulation is needed.
+  # If amp is ever switched off, re-run the benchmark -- fp32 will NOT fit 64.
+  micro_batch_size: 64          # measured, not estimated
+  grad_accum_steps: 1
   effective_batch_size: 64      # [PAPER] -- must stay 64
-  vram_budget_gib: 13.5         # of 16.0 usable; headroom for fragmentation/eval
+  vram_budget_gib: 14.0         # 87.5% of 16.0; benchmark picks under this cap
   amp: bf16                     # H200 handles bf16 natively; halves activation memory
   grad_checkpointing: false     # enable only if bf16 alone cannot reach micro_batch>=8
   clip_grad_norm: 1.0
