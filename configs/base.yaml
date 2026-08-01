@@ -99,9 +99,13 @@ train:
   grad_checkpointing: false     # enable only if bf16 alone cannot reach micro_batch>=8
   clip_grad_norm: 1.0
 
-  ckpt_every_epochs: 5
+  ckpt_every_epochs: 2          # [CLUSTER] frequent early on -- pods have died twice;
+                                # widen to 5-10 once the run proves stable
   keep_last_n_ckpts: 3
   resume: auto                  # [CLUSTER] pods get evicted; always be resumable
+  heartbeat_sec: 300            # [CLUSTER] last-known-alive marker in the logs
+  canary_every_steps: 500       # [CLUSTER] fixed-batch drift probe (silent corruption)
+  log_every_steps: 50
 
 # ---------------------------------------------------------------- evaluation
 eval:

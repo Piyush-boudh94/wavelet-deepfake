@@ -1,0 +1,68 @@
+# WMamba Phase 1 training Job.
+#
+# DO NOT apply while the dev pod is running -- both claim the entire namespace
+# quota (16 CPU / 32Gi / the single mig-1g.18gb slice). Sequence:
+#
+#   kubectl delete -f scripts/k8s/dev-pod.yaml      # free the quota
+#   kubectl apply  -f scripts/k8s/train-job.yaml
+#   kubectl logs -n dgx-s-bmu-cse-240577-restricted -l app=wmamba-train -f
+#
+# Eviction-resilience design (this namespace has a history of resources being
+# deleted externally -- twice in 24h, including the controller objects):
+#   * Job + restartPolicy OnFailure + backoffLimit 8: pod-level deaths are
+#     retried automatically by the Job controller.
+#   * ALL state (code, venv, config, checkpoints, logs) lives on the NFS home;
+#     nothing of value is in the container filesystem.
+#   * train.py auto-resumes from the newest valid checkpoint UNCONDITIONALLY at
+#     start -- no flag needed -- so a retried pod continues rather than restarts.
+#   * If the Job OBJECT itself is deleted (observed failure mode!), re-applying
+#     this file resumes from the last checkpoint. Recovery is always exactly:
+#     kubectl apply -f scripts/k8s/train-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wmamba-phase1
+  namespace: dgx-s-bmu-cse-240577-restricted
+  labels: {app: wmamba-train, project: wmamba, phase: "1"}
+spec:
+  backoffLimit: 8               # transient evictions retry; a genuinely crashing
+                                # run stops after 8 attempts instead of looping forever
+  completions: 1
+  parallelism: 1
+  template:
+    metadata:
+      labels: {app: wmamba-train, project: wmamba}
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 1109
+        runAsGroup: 1109
+        fsGroup: 1109
+      containers:
+        - name: train
+          image: pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime
+          workingDir: /home/dgx-s-bmu-cse-240577/research
+          command:
+            - .venv/bin/python
+            - -u
+            - -m
+            - src.training.train
+            - --config=configs/base.yaml
+          env:
+            - {name: HOME,    value: /home/dgx-s-bmu-cse-240577}
+            - {name: USER,    value: dgx-s-bmu-cse-240577}
+            - {name: LOGNAME, value: dgx-s-bmu-cse-240577}
+            - {name: PYTHONUNBUFFERED, value: "1"}
+            - {name: TORCHINDUCTOR_CACHE_DIR, value: /home/dgx-s-bmu-cse-240577/.cache/torchinductor}
+            - {name: TRITON_CACHE_DIR,        value: /home/dgx-s-bmu-cse-240577/.cache/triton}
+          resources:
+            requests: {cpu: "16", memory: 32Gi, nvidia.com/mig-1g.18gb: "1"}
+            limits:   {cpu: "16", memory: 32Gi, nvidia.com/mig-1g.18gb: "1"}
+          volumeMounts:
+            - {name: home, mountPath: /home/dgx-s-bmu-cse-240577}
+            - {name: dshm, mountPath: /dev/shm}
+      volumes:
+        - name: home
+          nfs: {server: 10.141.255.254, path: /home/dgx-s-bmu-cse-240577}
+        - name: dshm
+          emptyDir: {medium: Memory, sizeLimit: 8Gi}

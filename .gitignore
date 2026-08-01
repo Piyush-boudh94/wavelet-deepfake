@@ -40,3 +40,5 @@ htmlcov/
 # Scratch
 scratch/
 *.tmp
+vendor/VMamba/**
+!vendor/VMamba/PROVENANCE.md
