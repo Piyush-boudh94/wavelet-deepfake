@@ -1,0 +1,71 @@
+# WMamba dependencies -- the intent file. `requirements.lock.txt` is the exact
+# frozen output of the working environment; regenerate it with:
+#     scripts/pod.sh pip freeze --local > requirements.lock.txt
+#
+# IMPORTANT: this environment has NO COMPILER. The pod image
+# (pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime) ships without gcc, g++, make
+# or nvcc, and we have no root to install them. Every package here must resolve
+# to a prebuilt wheel. Anything requiring a source build will fail.
+
+# --- Core (installed into the venv, shadowing the image's torch 2.4.0) --------
+# torch is pinned to 2.10.0 for two independent reasons:
+#   1. security -- 2.4.0 carried 22 advisories (see docs/SECURITY.md)
+#   2. it is the newest torch for which mamba-ssm publishes prebuilt kernels
+torch==2.10.0
+torchvision==0.25.0
+
+# --- Mamba / SSM kernels -- INSTALLED FROM vendor/wheels/, NOT FROM PyPI ------
+# These ship precompiled CUDA kernels bound to an exact
+# (cuda, torch-minor, cpython, C++ ABI) tuple. The PyPI sdist would trigger a
+# source build and fail. Install the checksum-verified local wheels instead:
+#
+#   pip install --no-deps vendor/wheels/causal_conv1d-1.6.2.post1+cu12torch2.10cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
+#   pip install --no-deps vendor/wheels/mamba_ssm-2.3.2.post1+cu12torch2.10cxx11abiTRUE-cp311-cp311-linux_x86_64.whl
+#
+# Fetch + verify them with: python scripts/fetch_wheels.py
+# mamba-ssm==2.3.2.post1      (local wheel)
+# causal-conv1d==1.6.2.post1  (local wheel)
+einops
+transformers
+
+# --- Backbone --------------------------------------------------------------
+timm                      # VMamba backbone utilities (DropPath, trunc_normal_)
+
+# --- Data pipeline ---------------------------------------------------------
+# headless build is MANDATORY: the container has no X libraries (libxcb.so.1),
+# and the GUI build of opencv fails at import. Some transitive deps
+# (iglovikov-helper-functions, imagecorruptions) declare `opencv-python` and
+# will emit a pip resolver warning -- it is benign, headless provides the same
+# `cv2` module. Do not "fix" it by installing opencv-python.
+opencv-python-headless<5
+albumentations                     # Appendix B.3 augmentations
+dlib-bin                           # prebuilt dlib -- plain `dlib` needs a C++ compiler
+retinaface-pytorch                 # face detection / bounding boxes (Appendix B.2)
+numpy<2
+pandas
+Pillow>=12.3.0                     # CVE fixes
+
+# --- Config / training / eval ----------------------------------------------
+hydra-core
+omegaconf
+pyyaml
+scikit-learn                       # AUC
+tensorboard
+tqdm
+safetensors                        # preferred checkpoint format
+
+# --- Security-driven pins (see docs/SECURITY.md) ---------------------------
+urllib3>=2.7.0
+requests>=2.33.0
+cryptography>=48.0.1
+jinja2>=3.1.6
+filelock>=3.20.3
+idna>=3.15
+pygments>=2.20.0
+soupsieve>=2.8.4
+brotli>=1.2.0
+
+# --- Dev / QA ---------------------------------------------------------------
+pytest
+pytest-cov
+pip-audit

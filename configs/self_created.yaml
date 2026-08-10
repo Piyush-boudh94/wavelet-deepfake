@@ -1,0 +1,40 @@
+# Phase 2 -- Fine-tuning on self-created dataset.
+# Inherits model/optimizer/cluster settings from base.yaml.
+
+extends: base.yaml
+
+run_name: self_created
+
+data:
+  train:
+    dataset: self_created
+    split: train
+    real_only: false
+    compression: null
+
+sbi:
+  enabled: false
+
+train:
+  epochs: 30
+  lr: 5.0e-6                    # Fine-tuning LR
+  lr_decay_start_epoch: 15
+  early_stopping:
+    metric: val_auc
+    mode: max
+    patience: 10
+
+eval:
+  metric: video_auc
+  protocol: within_dataset
+  splits: [val, test]
+  cross_dataset: []
+  cross_manipulation: []
+  batch_size: 32
+  val_frames_per_video: 8       # early-stopping probe only
+  test_frames_per_video: 32     # the reported metric
+
+phase2:
+  enabled: true
+  data_dir: ${paths.data_root}/self_created
+  init_from: ${paths.checkpoints}/lavdf/best/model.safetensors

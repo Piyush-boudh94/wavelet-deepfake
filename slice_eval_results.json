@@ -1,0 +1,24 @@
+{
+  "dfdc": {
+    "total": 240,
+    "real": 120,
+    "fake": 120,
+    "auc": 0.79542
+  },
+  "ffpp": {
+    "total": 134,
+    "real": 67,
+    "fake": 67,
+    "auc": 0.88706
+  },
+  "lavdf": {
+    "total": 120,
+    "real": 60,
+    "fake": 60,
+    "auc": 0.99111
+  },
+  "overall": {
+    "total": 494,
+    "auc": 0.88321
+  }
+}

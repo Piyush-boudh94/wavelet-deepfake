@@ -1,0 +1,80 @@
+{
+  "ece": 0.06171,
+  "bins": [
+    {
+      "bin": "0.0-0.1",
+      "count": 56,
+      "avg_confidence": 0.0547,
+      "avg_accuracy": 0.0179,
+      "gap": 0.0369
+    },
+    {
+      "bin": "0.1-0.2",
+      "count": 43,
+      "avg_confidence": 0.1532,
+      "avg_accuracy": 0.093,
+      "gap": 0.0602
+    },
+    {
+      "bin": "0.2-0.3",
+      "count": 49,
+      "avg_confidence": 0.2471,
+      "avg_accuracy": 0.1837,
+      "gap": 0.0635
+    },
+    {
+      "bin": "0.3-0.4",
+      "count": 53,
+      "avg_confidence": 0.3532,
+      "avg_accuracy": 0.3019,
+      "gap": 0.0513
+    },
+    {
+      "bin": "0.4-0.5",
+      "count": 39,
+      "avg_confidence": 0.4463,
+      "avg_accuracy": 0.3077,
+      "gap": 0.1386
+    },
+    {
+      "bin": "0.5-0.6",
+      "count": 47,
+      "avg_confidence": 0.5479,
+      "avg_accuracy": 0.617,
+      "gap": 0.0691
+    },
+    {
+      "bin": "0.6-0.7",
+      "count": 49,
+      "avg_confidence": 0.6464,
+      "avg_accuracy": 0.7551,
+      "gap": 0.1087
+    },
+    {
+      "bin": "0.7-0.8",
+      "count": 47,
+      "avg_confidence": 0.7482,
+      "avg_accuracy": 0.7447,
+      "gap": 0.0035
+    },
+    {
+      "bin": "0.8-0.9",
+      "count": 66,
+      "avg_confidence": 0.8532,
+      "avg_accuracy": 0.9394,
+      "gap": 0.0862
+    },
+    {
+      "bin": "0.9-1.0",
+      "count": 45,
+      "avg_confidence": 0.9371,
+      "avg_accuracy": 0.9333,
+      "gap": 0.0037
+    }
+  ],
+  "real_score_mean": 0.30972,
+  "real_score_std": 0.22546,
+  "fake_score_mean": 0.69822,
+  "fake_score_std": 0.20855,
+  "verdict": "MODERATELY CALIBRATED \u2014 Platt scaling recommended for threshold-based decisions"
+}

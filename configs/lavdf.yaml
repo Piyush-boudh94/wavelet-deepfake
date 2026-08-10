@@ -1,0 +1,66 @@
+# Run 2 of 2 -- LAV-DF only. Inherits model/optimizer/cluster settings from base.
+#
+# Labelling rule (user-directed): WMamba is a VISUAL detector and audio forgery
+# is explicitly out of scope, so a video counts as fake only when its video
+# track was modified. LAV-DF's own "is it fake" flag also fires on audio-only
+# forgeries; using it would mislabel 33,170 videos whose frames are untouched.
+#
+#   label = 1 if modify_video else 0        <- what we use
+#   NOT     1 if n_fakes > 0                <- would poison ~24% of the set
+#
+# Supervised training on those labels; SBI is off (LAV-DF ships real fakes).
+
+extends: base.yaml
+
+run_name: lavdf
+
+data:
+  train:
+    dataset: lavdf
+    split: train                # LAV-DF's own official split
+    real_only: false
+    compression: null
+  root: ${paths.raw}/lavdf
+  layout: split_label           # <root>/<split>/<real|fake>/*.mp4
+  splits: [train, val, test]    # LAV-DF's official `dev` was renamed `val`
+  class_dirs: {real: 0, fake: 1}
+  metadata: ${paths.raw}/lavdf/metadata.min.json   # stays authoritative
+  label_field: modify_video     # NOT n_fakes -- see header
+
+sbi:
+  enabled: false                # see header
+
+train:
+  # [CLUSTER] MEASURED 2026-08-03 (scripts/benchmark_throughput.py): 44.3 img/s
+  # at batch 64 on the mig-1g.18gb slice (13.06 GiB peak, 85.5% of the 15.28 GiB
+  # actually available; batch 80 OOMs). 20,000 train videos x 8 frames =
+  # 160,000 img/epoch = 60 min/epoch, so the paper's 200 epochs would take
+  # 8.3 DAYS. The paper's 200 is calibrated for SBI, where every epoch
+  # synthesises brand-new fakes; supervised training re-sees the SAME fixed
+  # fakes, so past ~30 epochs it memorises rather than learns.
+  epochs: 30                    # [CLUSTER] ~30 h wall clock
+  lr_decay_start_epoch: 15      # keep the paper's halfway-point decay shape
+  early_stopping:
+    metric: val_auc
+    mode: max
+    patience: 10                 # epochs without improvement before stopping
+
+eval:
+  metric: video_auc             # [PAPER] frame scores averaged per video
+  protocol: within_dataset
+  splits: [val, test]
+  cross_dataset: []
+  cross_manipulation: []
+  batch_size: 32
+  # [PAPER B.4] says 32 frames/video at inference, and the FINAL test number
+  # uses exactly that. But the in-training early-stopping probe runs EVERY
+  # epoch over 4,000 val videos: at 32 frames that is 128,000 images/epoch,
+  # which would add roughly 8 h across the run purely to decide when to stop.
+  # 8 frames is ample for ranking successive epochs against each other.
+  val_frames_per_video: 8       # early-stopping probe only
+  test_frames_per_video: 32     # [PAPER] the reported metric
+
+# Verified counts on disk under the visual labelling rule:
+#   train 40,342 real / 38,361 fake (48.7%)
+#   val   15,980 real / 15,521 fake (49.3%)   <- LAV-DF's `dev`
+#   test  13,279 real / 12,821 fake (49.1%)

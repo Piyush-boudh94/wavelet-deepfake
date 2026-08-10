@@ -1,0 +1,125 @@
+# WMamba - Phase 1 reference configuration.
+#
+# Values marked [PAPER] are taken verbatim from Peng et al., ACM MM 2025
+# (arXiv:2501.09617). Values marked [CLUSTER] are adapted to this machine and
+# are the ONLY places where we deviate -- every deviation is justified inline.
+# No hyperparameter is hardcoded in Python; everything is read from here.
+
+# Shared parent config. Not run directly -- the per-dataset configs
+# (configs/dfdc.yaml, configs/lavdf.yaml) `extends:` this file and override the
+# data/eval sections. Everything below is common to both runs.
+
+run_name: phase1          # overridden per dataset; scopes checkpoints/<run_name>
+seed: 42
+deterministic: false      # cuDNN autotune on; SBI is stochastic by design anyway
+
+paths:
+  root:         ${oc.env:WMAMBA_ROOT,/home/dgx-s-bmu-cse-240577/research}
+  data_root:    ${paths.root}/data
+  raw:          ${paths.data_root}/raw
+  processed:    ${paths.data_root}/processed
+  checkpoints:  ${paths.root}/checkpoints
+  logs:         ${paths.root}/logs
+
+# ---------------------------------------------------------------- model
+model:
+  name: wmamba
+  num_classes: 2                # [PAPER] real / fake, plain CE loss
+
+  backbone:
+    name: vmamba_small          # [PAPER] VMamba-S beats VMamba-T and -B (Table 5)
+    depths: [2, 2, 15, 2]       # [PAPER] Sec 4.1.5
+    dims: [96, 192, 384, 768]   # VMamba-S official
+    pretrained: true            # [PAPER] ImageNet-1K init -- NOT from scratch
+    pretrained_path: ${paths.checkpoints}/pretrained/vssm_small_0229_ckpt_epoch_222.pth
+    drop_path_rate: 0.3
+
+  hwfeb:
+    enabled: true
+    dwt_levels: 4               # [PAPER] one level per VMamba stage (Table 8: all 4 stages best)
+    subbands: [LH, HL, HH]      # [PAPER] LL EXCLUDED -- Table 3 shows including it hurts
+    stages: [1, 2, 3, 4]        # [PAPER] Table 8, all four
+    skip_connections: true      # [PAPER] Sec 3.2.1, "to enhance model stability"
+    wfem_channels: 32
+
+  dcconv:
+    kernel_length: 9            # [PAPER] Sec 4.1.5 / Table 10 best
+    offset_activation: tanh     # [PAPER] offsets bounded to [-1, 1]
+    angle_activation: sigmoid   # [PAPER] angle bounded to [0, pi/2] via sigmoid + scaling
+    angle_max: 1.5707963267948966   # pi/2
+
+# ---------------------------------------------------------------- data
+data:
+  image_size: 224               # [PAPER] Appendix B.4
+  train_frames_per_video: 8     # [PAPER] Appendix B.4
+  eval_frames_per_video: 32     # [PAPER] Appendix B.4
+  # [PAPER] Appendix B.2 -- different crop margins for train vs inference
+  train_crop_margin: [0.04, 0.20]   # random 4%-20%
+  eval_crop_margin: 0.125           # fixed 12.5%
+  multi_face_policy: max_fakeness   # [PAPER] B.4: score each face, take the highest
+
+  train:
+    dataset: ffpp
+    split: train
+    real_only: true             # [PAPER] SBI trains on REAL videos only. This is intentional.
+    compression: c23
+
+  # [CLUSTER] 16 CPU is the whole namespace quota; leave headroom for the main proc.
+  num_workers: 12
+  prefetch_factor: 4
+  pin_memory: true
+  persistent_workers: true
+
+sbi:                            # [PAPER] Appendix B.1
+  enabled: true
+  landmark_predictor: ${paths.root}/checkpoints/pretrained/shape_predictor_81_face_landmarks.dat
+  # [PAPER] B.3 -- STG augs and real-sample augs are DIFFERENT sets. Do not merge.
+  stg_transforms: [RGBShift, HueSaturationValue, RandomBrightnessContrast, Downscale, Sharpen]
+  real_transforms: [ImageCompression, RGBShift, HueSaturationValue, RandomBrightnessContrast]
+
+# ---------------------------------------------------------------- training
+train:
+  optimizer: adamw              # [PAPER] Sec 4.1.5
+  lr: 5.0e-5                    # [PAPER]
+  weight_decay: 0.05
+  epochs: 200                   # [PAPER]
+  lr_schedule: linear_decay
+  lr_decay_start_epoch: 100     # [PAPER] linear decay begins at epoch 100
+  loss: cross_entropy           # [PAPER] Sec 3.1, deliberately plain. No auxiliary losses.
+
+  # ---- [CLUSTER] MEASURED on the mig-1g.18gb slice, 2026-08-01 ----------------
+  # scripts/benchmark_batch.py, full train steps (fwd+bwd+AdamW+clip) under
+  # bf16 autocast, pretrained weights loaded:
+  #   batch 64 -> peak 13.08 GiB of 16.0 (81.8%), headroom 2.92 GiB (18%)
+  #   (scaling was linear: 32 -> 6.91 GiB, 48 -> 10.03 GiB)
+  # The paper's ~30 GB at batch 64 is fp32; bf16 halves activations, so the
+  # full paper batch fits and NO gradient accumulation is needed.
+  # If amp is ever switched off, re-run the benchmark -- fp32 will NOT fit 64.
+  micro_batch_size: 64          # measured, not estimated
+  grad_accum_steps: 1
+  effective_batch_size: 64      # [PAPER] -- must stay 64
+  vram_budget_gib: 14.0         # 87.5% of 16.0; benchmark picks under this cap
+  amp: bf16                     # H200 handles bf16 natively; halves activation memory
+  grad_checkpointing: false     # enable only if bf16 alone cannot reach micro_batch>=8
+  clip_grad_norm: 1.0
+
+  ckpt_every_epochs: 2          # [CLUSTER] frequent early on -- pods have died twice;
+                                # widen to 5-10 once the run proves stable
+  keep_last_n_ckpts: 3
+  resume: auto                  # [CLUSTER] pods get evicted; always be resumable
+  heartbeat_sec: 300            # [CLUSTER] last-known-alive marker in the logs
+  canary_every_steps: 500       # [CLUSTER] fixed-batch drift probe (silent corruption)
+  log_every_steps: 50
+
+# ---------------------------------------------------------------- evaluation
+eval:
+  metric: video_auc             # [PAPER] frame scores averaged per video
+  cross_dataset: [cdf, dfdc, dfdcp, ffiw]     # [PAPER] Table 1
+  cross_manipulation: [DF, F2F, FS, NT]       # [PAPER] Table 2, trained on FF++ real only
+  batch_size: 32
+
+# ---------------------------------------------------------------- phase 2
+phase2:
+  enabled: false                # Do not touch until Phase 1 results are reviewed.
+  data_dir: ${paths.data_root}/self_created
+  init_from: ${paths.checkpoints}/phase1_best.pt
