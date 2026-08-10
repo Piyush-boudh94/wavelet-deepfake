@@ -1,0 +1,64 @@
+# Run 1 of 2 -- DFDC only. Inherits model/optimizer/cluster settings from base.
+#
+# Deviation from the paper, deliberate and user-directed: WMamba trains on FF++
+# real videos with SBI-synthesised fakes. FF++ was never transferred; DFDC ships
+# 800 real / 800 fake with usable labels, so this run is plain supervised
+# training on those labels. SBI is off -- with only 800 reals it would discard
+# every genuine fake in the set.
+
+extends: base.yaml
+
+run_name: dfdc
+
+data:
+  train:
+    dataset: dfdc
+    split: train                # from data/raw/dfdc/splits.json
+    real_only: false            # supervised: both classes are real videos
+    compression: null           # N/A -- DFDC ships one encoding
+  root: ${paths.raw}/dfdc
+  layout: split_label           # <root>/<split>/<real|fake>/*.mp4
+  splits: [train, val, test]
+  class_dirs: {real: 0, fake: 1}
+  metadata: ${paths.raw}/dfdc/metadata.json     # stays authoritative
+  splits_file: ${paths.raw}/dfdc/splits.json
+  label_field: label            # REAL -> 0, FAKE -> 1
+
+sbi:
+  enabled: false                # see header
+
+train:
+  # [CLUSTER] Same reasoning as configs/lavdf.yaml: 44.3 img/s measured, and
+  # 200 epochs is an SBI-specific number that does not transfer to supervised
+  # training on fixed labelled fakes. At the expanded 5,024-video set,
+  # 8 frames/video = 40,192 img/epoch = ~15 min/epoch -> ~7.5 h for 30 epochs.
+  epochs: 30
+  lr_decay_start_epoch: 15
+  early_stopping:
+    metric: val_auc
+    mode: max
+    patience: 3                 # counts VALIDATIONS; with val_every_epochs: 2
+                                # that is 6 epochs without improvement
+
+eval:
+  metric: video_auc             # [PAPER] frame scores averaged per video
+  protocol: within_dataset      # no cross-dataset sets were transferred
+  splits: [val, test]
+  cross_dataset: []
+  cross_manipulation: []
+  batch_size: 32
+  val_frames_per_video: 8       # early-stopping probe only (see configs/lavdf.yaml)
+  test_frames_per_video: 32     # [PAPER B.4] the reported metric
+  # MEASURED on the LAV-DF run: validation is ~300 s against ~530 s of training,
+  # i.e. 36% of every epoch spent only on deciding when to stop. Probing every
+  # 2nd epoch reclaims ~18% of total wall clock. Patience below counts
+  # VALIDATIONS, not epochs, so 3 here == 6 epochs without improvement.
+  val_every_epochs: 2
+
+# Identity-grouped split (scripts/build_dfdc_splits.py), fake and its source
+# real always land together. Verified 50.0% fake in every split:
+#   train 560 real / 560 fake   val 120/120   test 120/120
+#
+# Audio-only-fake check (scripts/detect_dfdc_audio_only.py): of the 285 fakes
+# whose source real is present, 0 were audio-only -- all 285 are genuinely
+# video-modified. No relabelling needed. Result in data/raw/dfdc/audio_only.json.

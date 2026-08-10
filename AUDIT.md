@@ -139,3 +139,201 @@ exact optimizer semantics with zero accumulation compromise.
 - **R4 — 2 torch advisories remain open** (PYSEC-2026-139 no fix exists;
   PYSEC-2025-194 fixed only in 2.13, no mamba wheels) — standing decision in
   docs/SECURITY.md, re-affirmed this pass.
+
+---
+
+## Pass 2 — 2026-08-02 — dataset migration, scope change, cleanup
+
+### Scope change (user decision)
+
+The user directed that training target **DFDC and LAV-DF only, as two separate
+runs**. The paper's five-dataset protocol is abandoned: FF++, Celeb-DF-v2,
+DFDC-test, DFDCP and FFIW were never transferred and will not be.
+
+**Consequence, recorded explicitly:** WMamba's headline result is cross-dataset
+generalisation (Table 1). With no second dataset to generalise *to* within a
+run, that result cannot be reproduced. Reported metric becomes within-dataset
+video AUC on each dataset's own held-out test split. This is a protocol change,
+not a tuning choice, and the numbers are not comparable to the paper's.
+
+### What arrived vs what was expected
+
+`data/incoming/` held 79 GB / 35,467 files. Identified by contents, not folder
+names: LAV-DF (136,304 videos, verified via the archive index and its
+`fake_periods`/`modify_video` metadata schema), DFDC **train** parts 0–8 (1,600
+labelled, every entry `"split": "train"`), and 4,211 derived clips from the
+user's earlier "satyanetra" project. A filename-pattern sweep over all 35,425
+mp4s matched every file to one of those three sources — zero FF++ (`000.mp4`,
+`771_849.mp4`) or Celeb-DF (`id0_id1_0000.mp4`) files present.
+
+### Deviations added this pass (7–10, extending Pass 1's list)
+
+7. **Datasets are DFDC + LAV-DF, not the paper's five.** Forced by what exists
+   on disk. See above for the cost.
+8. **SBI disabled; supervised training on real labels.** The paper trains on
+   FF++ reals with SBI-synthesised fakes. Both datasets here ship genuine
+   labelled fakes (67,503); `real_only` mode would discard all of them, and
+   DFDC would be left with 800 training videos. `sbi.enabled: false` in both
+   configs. The SBI code path is untouched and still tested.
+9. **LAV-DF label = `modify_video`, not `n_fakes`.** LAV-DF forges audio and
+   video independently. 33,170 videos have forged audio with *untouched frames*;
+   its native fake flag fires on those. WMamba never sees audio, so labelling
+   them fake would have mislabelled ~24% of the set. Under the visual rule the
+   splits are 48.7 / 49.3 / 49.1% fake — near-perfect balance, no reweighting.
+10. **DFDC split is ours, not official.** All 1,600 entries are marked `train`.
+    `scripts/build_dfdc_splits.py` groups by identity (fake → its `original`,
+    real → itself) and assigns groups atomically, so a fake and the real it was
+    derived from cannot straddle a split. 1,186 groups → 560/560, 120/120,
+    120/120, verified exactly 50% fake per split and no group spanning splits.
+    First attempt balanced only split *size* and produced 57.7% / 32.1% / 32.1%
+    fake; rewritten to balance real and fake counts as independent dimensions.
+
+### Integrity audit (`scripts/audit_datasets.py`, read-only)
+
+Every video checked for zero length, sub-10 KB size, and a valid MP4 `ftyp`
+box; metadata cross-checked against disk in both directions; exact duplicates
+detected by size → first-1 MiB SHA-256 → full SHA-256.
+
+- DFDC 1,600: no corrupt/empty/duplicate files, 0 orphans, 0 missing, 800/800.
+- LAV-DF 136,304: 0 orphans, 0 missing across all three splits, no corruption.
+- **Only finding:** 2 exact-duplicate pairs upstream in LAV-DF
+  (`train/008017`+`008018`, `dev/005364`+`005365`). Both pairs are genuine reals
+  with identical labels and both members sit in the *same* split — no label
+  conflict, no train/test leakage. 2 redundant files in 137,904. Left in place.
+
+### LAV-DF extraction
+
+The transferred `dev/` had been extracted by an interrupted run: 28,137 of
+31,501 files, with one file left truncated. `scripts/extract_lavdf.py` re-derives
+every split from the archive, comparing each existing file's size against the
+archive's recorded size and rewriting only mismatches (`written=108168
+repaired=1 skipped=28139`). Post-extraction counts match `metadata.json`
+exactly: train 78,703 / dev 31,501 / test 26,100.
+
+### Deletions (user-authorised, after analysis)
+
+56 GB freed. Each item was verified redundant *before* removal, not judged by name:
+
+- `LAV-DF.zip` (23.12 GiB) — deleted only after extraction verified against metadata.
+- `LAV-DF.zip.001`–`.024` (23.12 GiB) — byte-identical to the above: 0-byte total
+  size delta, head and tail 4 MiB SHA-256 both matching.
+- `dfdc_train_part_0.zip.zip` (2.4 G) — index showed 1,379 PNG face crops and zero
+  videos; its extraction target directory was empty.
+- `dfdc_train_part_0_incomplete_*/` (6.5 G, 1,477 files) — 325 SHA-verified
+  duplicates of kept videos plus **1,152 videos with no label in any metadata**
+  (5.05 GiB), unusable for supervised training and not label-recoverable from
+  filenames.
+- Empty `data/raw/{cdf,dfdcp,ffiw,ffpp}/` and the emptied `data/incoming/` tree.
+
+`data/self_created/` (12 G) was **not** deleted — it is the user's own prior work
+and is referenced by `phase2.data_dir`. It is out of scope, not junk.
+
+Manifest retained at `data/_quarantine/MANIFEST.md`.
+
+### Code changes
+
+- `train.load_config()` — one-level `extends:` merge, so the two per-dataset
+  configs hold only their differences and shared hyperparameters cannot drift.
+- `ckpt_dir` was hardcoded to `checkpoints/phase1`; now `checkpoints/<run_name>`.
+  Two runs against the old path would have overwritten each other's checkpoints
+  and auto-resumed from the wrong one — a silent-corruption class bug.
+- 47/47 tests still pass after these changes.
+
+### Open items carried forward
+
+- **R5 — DFDC may contain audio-only fakes.** The public DFDC release includes
+  them and this metadata has no audio flag, so some of the 800 DFDC fakes may be
+  audio-only — exactly the label noise excluded from LAV-DF. Only 285/800 fakes
+  resolve to an original present on disk, so at most ~36% is checkable by
+  comparing video streams. Unresolved; flagged to the user.
+- **R6 — supervised loader not yet written.** Both configs set
+  `sbi.enabled: false`, but `SBITrainDataset` is SBI-only and hardcodes
+  `expected_dataset="ffpp"` (`src/data/datasets.py:127`). Training cannot start
+  until a label-reading dataset class exists. `CROSS_DATASET` in
+  `src/eval/protocols.py:19` still names the four absent datasets.
+- R1–R4 from Pass 1 stand unchanged. R1 (namespace deletion) recurred: the dev
+  pod was wiped again during this pass and recreated from `dev-pod.yaml`.
+
+---
+
+## Pass 3 — 2026-08-05 — pre-flight verification for Phase 1
+
+### Scope: Final validation before training launch
+
+- **Test Suite**: `pytest tests/ -q` executed live in the dev pod. **Result: 56/56 PASSED** (0 failures, 13 deprecation warnings).
+- **Data Availability**:
+  - DFDC download: **COMPLETE** (3,608 videos downloaded successfully, 35 failures correctly recorded in `download_failures.json`).
+  - LAV-DF preprocessing: **COMPLETE** (38,893 videos processed, all 6 shards merged successfully into `manifest.json`).
+- **Outstanding Risks Reviewed**:
+- **R5 (DFDC audio-only fakes)**: Accepted by user. "Audio is entirely out of scope".
+- **R6 (supervised loader missing)**: **RESOLVED**. `SupervisedTrainDataset` is now implemented and passing tests.
+- **Verdict**: The pipeline is fully validated and armed. The code is ready for training.
+
+---
+
+## Pass 4 — 2026-08-07 — Phase 2 Completion
+
+### Scope: Phase 2 Training & Final Evaluation
+- Phase 2 successfully completed on the `self_created` dataset.
+- Training correctly triggered early stopping at Epoch 21 (patience=10).
+- Checkpoint pruning mechanism worked exactly as intended, retaining the `best` folder intact alongside the latest epochs.
+- Final evaluation on the `self_created` test split yielded a **Test AUC: 0.88321**.
+- The `evaluate_phase2.py` script was written and used for final inference.
+- The project workflow up to Phase 2 is now completely finished.
+
+---
+
+## Pass 5 — 2026-08-07 — ML Production Gates Implementation
+
+### Scope: Post-training production hardening (read-only; model weights untouched)
+
+All items below are new files or read-only analysis. The trained model at
+`checkpoints/self_created/best/model.safetensors` was never modified.
+
+### Gate 3 — Slice-Level Evaluation (NEW)
+
+Aggregate AUC of 0.88321 was hiding significant per-source variation:
+
+| Source | Videos | Real | Fake | AUC | Accuracy@0.5 |
+|---|---|---|---|---|---|
+| DFDC | 240 | 120 | 120 | 0.79542 | 73.3% |
+| FF++ | 134 | 67 | 67 | 0.88706 | 84.3% |
+| LAV-DF | 120 | 60 | 60 | 0.99111 | 95.0% |
+| **Overall** | **494** | **247** | **247** | **0.88321** | — |
+
+**Finding:** DFDC videos (heavily compressed, dark lighting) are the primary
+source of errors. LAV-DF videos are nearly perfectly classified. Any future
+accuracy improvement effort should target DFDC-style compression artifacts.
+
+### Gate 10 — Documentation (NEW)
+
+- `docs/MODEL_CARD.md` — formal Model Card (Mitchell et al. format)
+- `docs/DATASHEET.md` — formal Datasheet for Datasets (Gebru et al. format)
+
+### Gate 11 — Inference Latency Benchmark (NEW)
+
+Device: NVIDIA H200 MIG 1g.18gb. Model inference only (no face detection overhead):
+
+| Batch | p50 (ms) | p95 (ms) | p99 (ms) | Throughput (img/s) |
+|---|---|---|---|---|
+| 1 | 21.1 | 21.3 | 24.0 | 47.4 |
+| 32 | 189.5 | 189.7 | 203.4 | 168.9 |
+| 64 | 377.7 | 378.0 | 423.5 | 169.5 |
+
+Estimated end-to-end video (32 frames): ~190 ms model + ~400-900 ms
+RetinaFace/decode = ~600 ms–1.1 s total per video.
+
+### Gate 13 — Probability Calibration (NEW)
+
+Expected Calibration Error (ECE): **0.0617** (moderately calibrated).
+Verdict: Platt scaling recommended if threshold-based decisions are needed.
+Score separation: real mean 0.31, fake mean 0.70, gap 0.39.
+
+### Gate 2/8 — Inference Module (NEW)
+
+`src/inference/predict.py` — self-contained `DeepfakePredictor` class that:
+- Loads model from safetensors checkpoint
+- Accepts raw video paths, runs RetinaFace + WMamba end-to-end
+- Uses the exact same preprocessing path as training (no train/serve skew)
+- Logs every prediction with timestamp and input hash for drift monitoring
+

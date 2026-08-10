@@ -13,7 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from ..data.datasets import VideoEvalDataset
+from ..data.datasets import EVAL_FRAMES_PER_VIDEO, VideoEvalDataset
 from .metrics import video_auc
 
 CROSS_DATASET = ("cdf", "dfdc", "dfdcp", "ffiw")
@@ -36,6 +36,28 @@ def _score_dataset(model, ds: VideoEvalDataset, batch_size: int,
     if was_training:
         model.train()   # Tier-4 audit: re-assert mode after nested eval
     return np.concatenate(scores), np.concatenate(labels), vids
+
+
+def evaluate_within_dataset(model, processed_root: str | Path, dataset_name: str,
+                            batch_size: int, device: str = "cuda",
+                            num_workers: int = 8,
+                            splits: tuple[str, ...] = ("val", "test"),
+                            frames_per_video: int = EVAL_FRAMES_PER_VIDEO,
+                            ) -> dict[str, float]:
+    """Video-level AUC on a dataset's OWN held-out splits.
+
+    Replaces the cross-dataset protocol for the DFDC and LAV-DF runs: those are
+    trained and evaluated inside one dataset, so there is no second dataset to
+    generalise to. Results are NOT comparable to the paper's Table 1.
+    """
+    root = Path(processed_root)
+    results: dict[str, float] = {}
+    for split in splits:
+        ds = VideoEvalDataset(root, dataset_name=dataset_name, split=split,
+                              frames_per_video=frames_per_video)
+        s, l, v = _score_dataset(model, ds, batch_size, device, num_workers)
+        results[split] = video_auc(s, l, v)
+    return results
 
 
 def evaluate_cross_dataset(model, processed_base: str | Path, batch_size: int,

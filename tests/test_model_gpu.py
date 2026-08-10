@@ -3,7 +3,23 @@ the pod via scripts/pod.sh; the head node has no GPU)."""
 import pytest
 import torch
 
-cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU pod")
+def _free_gib() -> float:
+    if not torch.cuda.is_available():
+        return 0.0
+    return torch.cuda.mem_get_info()[0] / 2**30
+
+
+# The namespace holds ONE mig-1g.18gb slice, shared by everything. While a
+# training run is using it (~15 of 16 GiB) these tests cannot allocate, and the
+# MIG allocator reports that as `NVML_SUCCESS == r INTERNAL ASSERT FAILED`
+# rather than a clean OOM -- which reads exactly like a code regression.
+# Skip with a truthful reason instead of failing misleadingly.
+NEED_GIB = 2.0
+cuda = pytest.mark.skipif(
+    not torch.cuda.is_available() or _free_gib() < NEED_GIB,
+    reason=(f"needs GPU pod with >={NEED_GIB} GiB free "
+            f"(only {_free_gib():.1f} GiB free -- training probably running)"),
+)
 
 CKPT = "checkpoints/pretrained/vssm_small_0229_ckpt_epoch_222.pth"
 

@@ -21,9 +21,9 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: wmamba-phase1
+  name: wmamba-phase2
   namespace: dgx-s-bmu-cse-240577-restricted
-  labels: {app: wmamba-train, project: wmamba, phase: "1"}
+  labels: {app: wmamba-train, project: wmamba, phase: "2"}
 spec:
   backoffLimit: 8               # transient evictions retry; a genuinely crashing
                                 # run stops after 8 attempts instead of looping forever
@@ -47,7 +47,7 @@ spec:
             - -u
             - -m
             - src.training.train
-            - --config=configs/base.yaml
+            - --config=configs/self_created.yaml
           env:
             - {name: HOME,    value: /home/dgx-s-bmu-cse-240577}
             - {name: USER,    value: dgx-s-bmu-cse-240577}

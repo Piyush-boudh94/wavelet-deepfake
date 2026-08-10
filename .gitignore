@@ -1,6 +1,11 @@
 # --- Never commit data, weights, logs, or secrets ---
 data/
-checkpoints/
+checkpoints/**
+!checkpoints/**/
+!checkpoints/lavdf/best/meta.json
+!checkpoints/lavdf/best/model.safetensors
+!checkpoints/self_created/best/meta.json
+!checkpoints/self_created/best/model.safetensors
 logs/
 runs/
 outputs/
@@ -34,6 +39,7 @@ htmlcov/
 # Editors / OS
 .vscode/
 .idea/
+.agents/
 .DS_Store
 *.swp
 

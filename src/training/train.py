@@ -43,11 +43,13 @@ import numpy as np
 import torch
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.data.augment import assert_disjoint_policy
-from src.data.datasets import SBITrainDataset
+from src.data.datasets import SBITrainDataset, SupervisedTrainDataset
+from src.eval.protocols import evaluate_within_dataset
 from src.models.wmamba import build_wmamba
 
 
@@ -102,7 +104,8 @@ def tensor_spot_checksum(state: dict, k: int = 8) -> dict[str, float]:
 
 # ----------------------------------------------------------------- checkpointing
 def save_checkpoint(ckpt_dir: Path, tag: str, model, optimizer, scheduler,
-                    epoch: int, global_step: int, cfg, repo_root: Path) -> Path:
+                    epoch: int, global_step: int, cfg, repo_root: Path,
+                    best_metric: float = -1.0, epochs_without_gain: int = 0) -> Path:
     from safetensors.torch import save_file, load_file
 
     final = ckpt_dir / tag
@@ -122,6 +125,8 @@ def save_checkpoint(ckpt_dir: Path, tag: str, model, optimizer, scheduler,
             "scheduler": scheduler.state_dict(),
             "epoch": epoch,
             "global_step": global_step,
+            "best_metric": best_metric,
+            "epochs_without_gain": epochs_without_gain,
             "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all(),
             "numpy_rng": np.random.get_state(),
@@ -173,7 +178,7 @@ def find_latest_checkpoint(ckpt_dir: Path) -> Path | None:
     return max(candidates)[1] if candidates else None
 
 
-def load_checkpoint(path: Path, model, optimizer, scheduler) -> tuple[int, int]:
+def load_checkpoint(path: Path, model, optimizer, scheduler) -> tuple[int, int, float, int]:
     from safetensors.torch import load_file
 
     model.load_state_dict(load_file(str(path / "model.safetensors")), strict=True)
@@ -187,7 +192,9 @@ def load_checkpoint(path: Path, model, optimizer, scheduler) -> tuple[int, int]:
     torch.cuda.set_rng_state_all(state["cuda_rng"])
     np.random.set_state(state["numpy_rng"])
     random.setstate(state["python_rng"])
-    return state["epoch"], state["global_step"]
+    best_metric = state.get("best_metric", -1.0)
+    epochs_without_gain = state.get("epochs_without_gain", 0)
+    return state["epoch"], state["global_step"], best_metric, epochs_without_gain
 
 
 # ------------------------------------------------------------------------ train
@@ -199,19 +206,46 @@ def group_grad_norm(params: list[torch.nn.Parameter]) -> float:
     return math.sqrt(total)
 
 
+def load_config(path: str | Path):
+    """Load a config, applying a one-level `extends:` include if present.
+
+    Per-dataset configs (configs/dfdc.yaml, configs/lavdf.yaml) carry only what
+    differs from configs/base.yaml, so shared hyperparameters cannot drift apart
+    between the two training runs.
+    """
+    cfg = OmegaConf.load(path)
+    parent = cfg.pop("extends", None)
+    if parent is None:
+        return cfg
+    base_path = (Path(path).parent / str(parent)).resolve()
+    if not base_path.is_file():
+        raise FileNotFoundError(f"{path} extends missing config {base_path}")
+    return OmegaConf.merge(OmegaConf.load(base_path), cfg)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
+    ap.add_argument("--smoke-steps", type=int, default=0,
+                    help="run N train steps then exit 0 without checkpointing. "
+                         "Proves data+model+optimizer work end to end before "
+                         "committing the GPU to a multi-day run.")
     args = ap.parse_args()
 
-    cfg = OmegaConf.load(args.config)
+    cfg = load_config(args.config)
     repo_root = Path(cfg.paths.root)
-    ckpt_dir = Path(cfg.paths.checkpoints) / "phase1"
+    # Run-scoped: DFDC and LAV-DF are trained as two separate runs and must not
+    # overwrite each other's checkpoints (or auto-resume from the wrong one).
+    ckpt_dir = Path(cfg.paths.checkpoints) / str(cfg.run_name)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     # NFS sanity (Stage 1): refuse to run if checkpoints resolve inside the
     # container's ephemeral filesystem.
     if not str(ckpt_dir).startswith("/home/"):
         raise RuntimeError(f"checkpoint dir not on persistent home: {ckpt_dir}")
+
+    tb_dir = Path(cfg.paths.logs) / "tensorboard" / str(cfg.run_name)
+    tb_dir.parent.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_dir=str(tb_dir))
 
     set_all_seeds(int(cfg.seed))
     # Intentional (Tier 1, documented): benchmark=True because input shapes are
@@ -230,18 +264,38 @@ def main() -> None:
     eff = int(cfg.train.effective_batch_size)
     if micro * accum != eff:
         raise ValueError(f"micro({micro}) x accum({accum}) != effective({eff})")
-    if micro % 2:
-        raise ValueError("micro_batch_size must be even (SBI yields real/fake pairs)")
+    # Two training modes. SBI yields (real, fake) PAIRS -- one dataset item is
+    # two images -- so its loader uses half the micro-batch and the loop
+    # flattens. Supervised yields ONE labelled image per item. Getting this
+    # wrong silently halves or doubles the real batch size, so the mode is
+    # explicit and logged.
+    sbi_mode = bool(cfg.sbi.enabled)
+    dataset_name = str(cfg.data.train.dataset)
+    processed = Path(cfg.paths.processed) / dataset_name
 
-    ds = SBITrainDataset(
-        Path(cfg.paths.processed) / "ffpp",
-        landmark_model_path=cfg.sbi.landmark_predictor,
-        image_size=int(cfg.data.image_size),
-        seed=int(cfg.seed),
-    )
+    if sbi_mode:
+        if micro % 2:
+            raise ValueError("micro_batch_size must be even (SBI yields real/fake pairs)")
+        ds = SBITrainDataset(
+            processed,
+            landmark_model_path=cfg.sbi.landmark_predictor,
+            image_size=int(cfg.data.image_size),
+            seed=int(cfg.seed),
+        )
+        batch_size = micro // 2
+    else:
+        ds = SupervisedTrainDataset(
+            processed,
+            dataset_name=dataset_name,
+            split=str(cfg.data.train.split),
+            image_size=int(cfg.data.image_size),
+            seed=int(cfg.seed),
+        )
+        batch_size = micro
+
     loader = DataLoader(
         ds,
-        batch_size=micro // 2,          # each item is a (real, fake) pair
+        batch_size=batch_size,
         shuffle=True,
         num_workers=int(cfg.data.num_workers),
         prefetch_factor=int(cfg.data.prefetch_factor),
@@ -250,8 +304,12 @@ def main() -> None:
         worker_init_fn=worker_init_fn,
         drop_last=True,
     )
-    log(f"train videos: {len(ds)}  micro-batch: {micro} imgs "
-        f"({micro//2} pairs)  accum: {accum}  effective: {eff}")
+    mode = "SBI (real-only + synthesised fakes)" if sbi_mode else "supervised (real labels)"
+    log(f"mode: {mode}  dataset: {dataset_name}")
+    if not sbi_mode:
+        log(f"  class balance: {ds.class_counts()}")
+    log(f"train videos: {len(ds)}  micro-batch: {micro} imgs  "
+        f"accum: {accum}  effective: {eff}")
 
     model = build_wmamba(cfg).to(device)
     groups = model.param_groups()
@@ -270,14 +328,21 @@ def main() -> None:
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    start_epoch, global_step = 0, 0
+    start_epoch, global_step, best_metric, epochs_without_gain = 0, 0, -1.0, 0
     latest = find_latest_checkpoint(ckpt_dir)
     if latest is not None:
-        start_epoch, global_step = load_checkpoint(latest, model, optimizer, scheduler)
+        start_epoch, global_step, best_metric, epochs_without_gain = load_checkpoint(latest, model, optimizer, scheduler)
         start_epoch += 1
         log(f"AUTO-RESUMED from {latest} (epoch {start_epoch}, step {global_step})")
     else:
         log("no checkpoint found -- fresh start")
+        if cfg.get("phase2", {}).get("enabled") and cfg.phase2.get("init_from"):
+            from safetensors.torch import load_file
+            init_path = Path(cfg.phase2.init_from)
+            if not init_path.exists():
+                raise FileNotFoundError(f"phase2.init_from missing: {init_path}")
+            model.load_state_dict(load_file(init_path), strict=True)
+            log(f"Phase 2: Loaded full model weights from {init_path}")
 
     amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16,
                  "off": None}[str(cfg.train.amp)]
@@ -290,14 +355,24 @@ def main() -> None:
     last_beat = time.time()
     loss_fn = torch.nn.CrossEntropyLoss()
 
+    es_cfg = cfg.train.get("early_stopping", None)
+    patience = int(es_cfg.patience) if es_cfg is not None else 0
+    if es_cfg is not None:
+        metric = str(es_cfg.get("metric", "val_auc"))
+        if metric != "val_auc":
+            raise ValueError(f"only val_auc early stopping is implemented, got {metric!r}")
+        log(f"early stopping ON: {metric}, patience {patience} epochs")
+
     model.train()
     for epoch in range(start_epoch, epochs):
         epoch_t0 = time.time()
         optimizer.zero_grad(set_to_none=True)
         for it, (images, labels) in enumerate(loader):
-            # (B, 2, 3, H, W) -> (2B, 3, H, W): flatten real/fake pairs
-            x = images.flatten(0, 1).to(device, non_blocking=True)
-            y = labels.flatten(0, 1).to(device, non_blocking=True)
+            if sbi_mode:
+                # (B, 2, 3, H, W) -> (2B, 3, H, W): flatten real/fake pairs
+                images, labels = images.flatten(0, 1), labels.flatten(0, 1)
+            x = images.to(device, non_blocking=True)
+            y = labels.to(device, non_blocking=True)
 
             if canary is None:
                 canary = (x[:4].detach().clone(), y[:4].detach().clone())
@@ -318,16 +393,28 @@ def main() -> None:
                     raise RuntimeError(
                         f"non-finite grad norm at epoch {epoch} step {global_step}"
                     )
+                # Per-group norms MUST be read here, between clipping and
+                # zero_grad. They used to be computed after zero_grad(
+                # set_to_none=True), which frees every .grad -- so this Tier-3
+                # frozen-backbone check silently reported {backbone: 0.0,
+                # hwfeb: 0.0} on every single step and could never have fired.
+                norms = ({g["name"]: round(group_grad_norm(g["params"]), 4)
+                          for g in groups}
+                         if (global_step + 1) % log_every == 0 else None)
+
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
 
-                if global_step % log_every == 0:
-                    norms = {g["name"]: round(group_grad_norm(g["params"]), 4)
-                             for g in groups}
+                if norms is not None:
                     log(f"epoch {epoch} step {global_step} "
                         f"loss {loss.item():.4f} grad_norm {float(total_norm):.4f} "
                         f"group_norms {norms} lr {scheduler.get_last_lr()[0]:.2e}")
+                    writer.add_scalar("train/loss", loss.item(), global_step)
+                    writer.add_scalar("train/lr", scheduler.get_last_lr()[0], global_step)
+                    writer.add_scalar("train/grad_norm", float(total_norm), global_step)
+                    for k, v in norms.items():
+                        writer.add_scalar(f"train/grad_norm_{k}", v, global_step)
 
                 if canary is not None and global_step % canary_every == 0:
                     model.eval()
@@ -336,6 +423,12 @@ def main() -> None:
                         closs = loss_fn(model(canary[0]), canary[1])
                     model.train()          # Tier 4: re-assert after nested eval
                     log(f"canary step {global_step} loss {closs.item():.5f}")
+                    writer.add_scalar("train/canary_loss", closs.item(), global_step)
+
+            if args.smoke_steps and global_step >= args.smoke_steps:
+                log(f"SMOKE TEST OK: {global_step} steps, last loss {loss.item():.5f} "
+                    f"-- exiting without checkpointing")
+                return
 
             if time.time() - last_beat >= heartbeat_sec:
                 log(f"HEARTBEAT alive epoch {epoch} step {global_step} "
@@ -346,17 +439,51 @@ def main() -> None:
 
         if (epoch + 1) % int(cfg.train.ckpt_every_epochs) == 0 or epoch == epochs - 1:
             save_checkpoint(ckpt_dir, f"epoch_{epoch:04d}", model, optimizer,
-                            scheduler, epoch, global_step, cfg, repo_root)
+                            scheduler, epoch, global_step, cfg, repo_root,
+                            best_metric, epochs_without_gain)
             keep = int(cfg.train.keep_last_n_ckpts)
             valid = sorted(
                 d for d in ckpt_dir.iterdir()
-                if d.is_dir() and (d / "meta.json").exists()
+                if d.is_dir() and (d / "meta.json").exists() and d.name != "best"
             )
             for old in valid[:-keep]:
                 shutil.rmtree(old)
                 log(f"pruned old checkpoint {old.name}")
 
         log(f"epoch {epoch} done in {time.time()-epoch_t0:.0f}s")
+
+        # ---- per-epoch validation + early stopping ------------------------
+        # Without this the `epochs: 30` cut is a blind guess. With it the run
+        # stops at the actual convergence point and always keeps the
+        # best-scoring weights, not merely the last ones.
+        # Validation costs ~36% of every epoch (measured: 300 s against 530 s of
+        # training). Probing every Nth epoch trades early-stopping resolution for
+        # that time; default 1 keeps the paper-faithful behaviour.
+        val_every = int(cfg.eval.get("val_every_epochs", 1))
+        due = ((epoch + 1) % val_every == 0) or (epoch == epochs - 1)
+        if es_cfg is not None and due:
+            auc = evaluate_within_dataset(
+                model, processed, dataset_name,
+                batch_size=int(cfg.eval.batch_size), device=device,
+                num_workers=int(cfg.data.num_workers), splits=("val",),
+                frames_per_video=int(cfg.eval.get("val_frames_per_video", 8)),
+            )["val"]
+            improved = auc > best_metric + 1e-6
+            log(f"epoch {epoch} val_auc {auc:.5f}"
+                f"{'  NEW BEST' if improved else f'  (best {best_metric:.5f})'}")
+            writer.add_scalar("val/auc", auc, epoch)
+            if improved:
+                best_metric, epochs_without_gain = auc, 0
+                save_checkpoint(ckpt_dir, "best", model, optimizer, scheduler,
+                                epoch, global_step, cfg, repo_root,
+                                best_metric, epochs_without_gain)
+            else:
+                epochs_without_gain += 1
+                if epochs_without_gain >= patience:
+                    log(f"EARLY STOP: val_auc has not improved for {patience} "
+                        f"epochs (best {best_metric:.5f})")
+                    break
+            model.train()      # Tier 4: re-assert after nested eval
 
     log("training complete")
 
