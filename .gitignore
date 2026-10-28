@@ -48,8 +48,6 @@ htmlcov/
 # Scratch
 scratch/
 *.tmp
-vendor/VMamba/**
-!vendor/VMamba/PROVENANCE.md
 
 # Personal/thesis documents (names, roll numbers, diary) -- never push
 *.docx
