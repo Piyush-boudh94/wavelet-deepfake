@@ -1,5 +1,5 @@
 # --- Never commit data, weights, logs, or secrets ---
-data/
+/data/
 checkpoints/**
 !checkpoints/**/
 !checkpoints/lavdf/best/meta.json
@@ -8,9 +8,9 @@ checkpoints/**
 !checkpoints/self_created/best/model.safetensors
 !checkpoints/phase4b_temporal/best/meta.json
 !checkpoints/phase4b_temporal/best/model.safetensors
-logs/
-runs/
-outputs/
+/logs/
+/runs/
+/outputs/
 vendor/wheels/*.whl
 
 # Secrets. .env holds real values; .env.example is the committed template.
