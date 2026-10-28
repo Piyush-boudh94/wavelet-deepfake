@@ -281,17 +281,24 @@ def main() -> None:
             landmark_model_path=cfg.sbi.landmark_predictor,
             image_size=int(cfg.data.image_size),
             seed=int(cfg.seed),
+            augmentation_profile=cfg.data.train.get("augmentation_profile", "default"),
         )
         batch_size = micro // 2
     else:
+        num_frames = 1
+        if cfg.model.get("architecture_mode", "baseline") == "temporal":
+            num_frames = 8 # default sequence length for training
+            
         ds = SupervisedTrainDataset(
             processed,
             dataset_name=dataset_name,
             split=str(cfg.data.train.split),
             image_size=int(cfg.data.image_size),
             seed=int(cfg.seed),
+            augmentation_profile=cfg.data.train.get("augmentation_profile", "default"),
+            num_frames=num_frames,
         )
-        batch_size = micro
+        batch_size = micro // num_frames
 
     loader = DataLoader(
         ds,
@@ -312,7 +319,17 @@ def main() -> None:
         f"accum: {accum}  effective: {eff}")
 
     model = build_wmamba(cfg).to(device)
-    groups = model.param_groups()
+    print(f"!!! DEBUG: model type is {type(model)} !!!", flush=True)
+    if hasattr(model, "param_groups"):
+        groups = model.param_groups()
+    else:
+        # Fallback for T_WMamba
+        groups = model.spatial_backbone.param_groups()
+        groups.append({"name": "temporal_mamba", "params": list(model.temporal_mamba.parameters())})
+        groups.append({"name": "pos_enc", "params": [model.pos_enc]})
+        groups.append({"name": "norm", "params": list(model.norm.parameters())})
+        # classifier is already inside spatial_backbone.backbone
+        
     optimizer = torch.optim.AdamW(
         [{"params": g["params"]} for g in groups],
         lr=float(cfg.train.lr),
@@ -341,8 +358,20 @@ def main() -> None:
             init_path = Path(cfg.phase2.init_from)
             if not init_path.exists():
                 raise FileNotFoundError(f"phase2.init_from missing: {init_path}")
-            model.load_state_dict(load_file(init_path), strict=True)
-            log(f"Phase 2: Loaded full model weights from {init_path}")
+            # strict=False allows architectural extensions like Spectral WMamba
+            state_dict = load_file(init_path)
+            if cfg.model.get("architecture_mode", "baseline") == "temporal":
+                mapped = {}
+                for k, v in state_dict.items():
+                    if k.startswith("backbone.") or k.startswith("hwfeb."):
+                        mapped[f"spatial_backbone.{k}"] = v
+                    else:
+                        mapped[k] = v
+            state_dict = mapped
+            model.load_state_dict(state_dict, strict=False)
+            log(f"Phase 2: Loaded full model weights from {init_path} (strict=False)")
+            
+    torch.cuda.empty_cache()
 
     amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16,
                  "off": None}[str(cfg.train.amp)]
@@ -462,11 +491,16 @@ def main() -> None:
         val_every = int(cfg.eval.get("val_every_epochs", 1))
         due = ((epoch + 1) % val_every == 0) or (epoch == epochs - 1)
         if es_cfg is not None and due:
+            is_temporal = cfg.model.get("architecture_mode", "baseline") == "temporal"
+            val_frames = int(cfg.eval.get("val_frames_per_video", 8))
+            eval_batch_size = max(1, int(cfg.eval.batch_size) // val_frames) if is_temporal else int(cfg.eval.batch_size)
+            
             auc = evaluate_within_dataset(
                 model, processed, dataset_name,
-                batch_size=int(cfg.eval.batch_size), device=device,
+                batch_size=eval_batch_size, device=device,
                 num_workers=int(cfg.data.num_workers), splits=("val",),
-                frames_per_video=int(cfg.eval.get("val_frames_per_video", 8)),
+                frames_per_video=val_frames,
+                return_sequences=is_temporal
             )["val"]
             improved = auc > best_metric + 1e-6
             log(f"epoch {epoch} val_auc {auc:.5f}"
@@ -484,6 +518,7 @@ def main() -> None:
                         f"epochs (best {best_metric:.5f})")
                     break
             model.train()      # Tier 4: re-assert after nested eval
+            torch.cuda.empty_cache()
 
     log("training complete")
 

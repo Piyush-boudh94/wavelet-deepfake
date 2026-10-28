@@ -16,6 +16,7 @@ import torch
 from torch import nn
 
 from .hwfeb import HWFEB
+from .swfeb import SWFEB
 from .vmamba_backbone import VMambaSBackbone
 
 
@@ -31,6 +32,7 @@ class WMamba(nn.Module):
         dcconv_kernel_length: int = 9,
         angle_max: float | None = None,
         drop_path_rate: float = 0.3,
+        architecture_mode: str = "baseline",
     ) -> None:
         super().__init__()
         self.backbone = VMambaSBackbone(
@@ -38,18 +40,27 @@ class WMamba(nn.Module):
             num_classes=num_classes,
             drop_path_rate=drop_path_rate,
         )
-        self.hwfeb = (
-            HWFEB(
-                levels=dwt_levels,
-                in_channels=3,
-                wfem_channels=wfem_channels,
-                kernel_length=dcconv_kernel_length,
-                stages=stages,
-                angle_max=angle_max,
-            )
-            if hwfeb_enabled
-            else None
-        )
+        if hwfeb_enabled:
+            if architecture_mode == "spectral":
+                self.hwfeb = SWFEB(
+                    levels=dwt_levels,
+                    in_channels=3,
+                    wfem_channels=wfem_channels,
+                    kernel_length=dcconv_kernel_length,
+                    stages=stages,
+                    angle_max=angle_max,
+                )
+            else:
+                self.hwfeb = HWFEB(
+                    levels=dwt_levels,
+                    in_channels=3,
+                    wfem_channels=wfem_channels,
+                    kernel_length=dcconv_kernel_length,
+                    stages=stages,
+                    angle_max=angle_max,
+                )
+        else:
+            self.hwfeb = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         attn = self.hwfeb(x) if self.hwfeb is not None else None
@@ -72,7 +83,7 @@ class WMamba(nn.Module):
 def build_wmamba(cfg) -> WMamba:
     """Construct from the OmegaConf config (configs/base.yaml `model` node)."""
     m = cfg.model
-    return WMamba(
+    wmamba = WMamba(
         num_classes=m.num_classes,
         pretrained_path=m.backbone.pretrained_path if m.backbone.pretrained else None,
         hwfeb_enabled=m.hwfeb.enabled,
@@ -82,4 +93,9 @@ def build_wmamba(cfg) -> WMamba:
         dcconv_kernel_length=m.dcconv.kernel_length,
         angle_max=m.dcconv.angle_max,
         drop_path_rate=m.backbone.drop_path_rate,
+        architecture_mode=m.get("architecture_mode", "baseline"),
     )
+    if m.get("architecture_mode", "baseline") == "temporal":
+        from .temporal import T_WMamba
+        return T_WMamba(wmamba)
+    return wmamba

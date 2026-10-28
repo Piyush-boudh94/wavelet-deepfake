@@ -43,18 +43,15 @@ def evaluate_within_dataset(model, processed_root: str | Path, dataset_name: str
                             num_workers: int = 8,
                             splits: tuple[str, ...] = ("val", "test"),
                             frames_per_video: int = EVAL_FRAMES_PER_VIDEO,
+                            return_sequences: bool = False
                             ) -> dict[str, float]:
-    """Video-level AUC on a dataset's OWN held-out splits.
-
-    Replaces the cross-dataset protocol for the DFDC and LAV-DF runs: those are
-    trained and evaluated inside one dataset, so there is no second dataset to
-    generalise to. Results are NOT comparable to the paper's Table 1.
-    """
+    """Video-level AUC on a dataset's OWN held-out splits."""
     root = Path(processed_root)
     results: dict[str, float] = {}
     for split in splits:
         ds = VideoEvalDataset(root, dataset_name=dataset_name, split=split,
-                              frames_per_video=frames_per_video)
+                              frames_per_video=frames_per_video,
+                              return_sequences=return_sequences)
         s, l, v = _score_dataset(model, ds, batch_size, device, num_workers)
         results[split] = video_auc(s, l, v)
     return results

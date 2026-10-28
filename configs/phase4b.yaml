@@ -1,0 +1,52 @@
+# Phase 4b -- Temporal Integration (T-WMamba)
+# Inherits from base.yaml but applies self_created fine-tuning configs
+# Reverts to default augmentations and enables Temporal-WMamba.
+
+extends: base.yaml
+
+run_name: phase4b_temporal
+
+model:
+  architecture_mode: temporal
+  hwfeb:
+    enabled: true
+
+data:
+  train:
+    dataset: self_created
+    split: train
+    real_only: false
+    compression: null
+    augmentation_profile: default
+  num_workers: 4
+  prefetch_factor: 2
+
+sbi:
+  enabled: false
+
+train:
+  epochs: 30
+  lr: 5.0e-6
+  lr_decay_start_epoch: 15
+  micro_batch_size: 32
+  grad_accum_steps: 2
+  early_stopping:
+    metric: val_auc
+    mode: max
+    patience: 10
+
+eval:
+  metric: video_auc
+  protocol: within_dataset
+  splits: [val, test]
+  cross_dataset: []
+  cross_manipulation: []
+  batch_size: 32
+  val_frames_per_video: 8
+  test_frames_per_video: 32
+
+phase2:
+  # Using the Phase 2 loading logic, but pointing to the best previous checkpoint
+  enabled: true
+  data_dir: ${paths.data_root}/self_created
+  init_from: ${paths.checkpoints}/lavdf/best/model.safetensors

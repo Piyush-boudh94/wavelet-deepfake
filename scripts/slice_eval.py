@@ -36,22 +36,34 @@ def classify_source(video_id: str) -> str:
         return "other"
 
 
+import argparse
+
 def main():
-    cfg = load_config("configs/self_created.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/phase4b.yaml")
+    parser.add_argument("--ckpt", default="checkpoints/phase4b_temporal/best/model.safetensors")
+    parser.add_argument("--dataset", default="self_created")
+    parser.add_argument("--split", default="test")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
     device = "cuda"
 
     model = build_wmamba(cfg).to(device)
-    model.load_state_dict(load_file("checkpoints/self_created/best/model.safetensors"), strict=True)
+    model.load_state_dict(load_file(args.ckpt), strict=False)
     model.eval()
 
+    is_temporal = cfg.model.get("architecture_mode", "baseline") == "temporal"
     ds = VideoEvalDataset(
-        processed_root=Path(cfg.paths.processed) / "self_created",
-        dataset_name="self_created",
-        split="test",
-        frames_per_video=32
+        processed_root=Path(cfg.paths.processed) / args.dataset,
+        dataset_name=args.dataset,
+        split=args.split,
+        frames_per_video=32,
+        return_sequences=is_temporal
     )
 
-    scores, labels, video_ids = _score_dataset(model, ds, batch_size=64, device=device, num_workers=8)
+    eval_batch = 1 if is_temporal else 64
+    scores, labels, video_ids = _score_dataset(model, ds, batch_size=eval_batch, device=device, num_workers=8)
 
     # Build per-video scores and labels
     label_of = {}

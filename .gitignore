@@ -6,6 +6,8 @@ checkpoints/**
 !checkpoints/lavdf/best/model.safetensors
 !checkpoints/self_created/best/meta.json
 !checkpoints/self_created/best/model.safetensors
+!checkpoints/phase4b_temporal/best/meta.json
+!checkpoints/phase4b_temporal/best/model.safetensors
 logs/
 runs/
 outputs/
@@ -48,3 +50,8 @@ scratch/
 *.tmp
 vendor/VMamba/**
 !vendor/VMamba/PROVENANCE.md
+
+# Personal/thesis documents (names, roll numbers, diary) -- never push
+*.docx
+*.pdf
+*.xlsx

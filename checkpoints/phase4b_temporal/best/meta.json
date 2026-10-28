@@ -1,0 +1,160 @@
+{
+  "epoch": 28,
+  "global_step": 8323,
+  "config": {
+    "run_name": "phase4b_temporal",
+    "seed": 42,
+    "deterministic": false,
+    "paths": {
+      "root": "/home/dgx-s-bmu-cse-240577/research",
+      "data_root": "/home/dgx-s-bmu-cse-240577/research/data",
+      "raw": "/home/dgx-s-bmu-cse-240577/research/data/raw",
+      "processed": "/home/dgx-s-bmu-cse-240577/research/data/processed",
+      "checkpoints": "/home/dgx-s-bmu-cse-240577/research/checkpoints",
+      "logs": "/home/dgx-s-bmu-cse-240577/research/logs"
+    },
+    "model": {
+      "name": "wmamba",
+      "num_classes": 2,
+      "backbone": {
+        "name": "vmamba_small",
+        "depths": [
+          2,
+          2,
+          15,
+          2
+        ],
+        "dims": [
+          96,
+          192,
+          384,
+          768
+        ],
+        "pretrained": true,
+        "pretrained_path": "/home/dgx-s-bmu-cse-240577/research/checkpoints/pretrained/vssm_small_0229_ckpt_epoch_222.pth",
+        "drop_path_rate": 0.3
+      },
+      "hwfeb": {
+        "enabled": true,
+        "dwt_levels": 4,
+        "subbands": [
+          "LH",
+          "HL",
+          "HH"
+        ],
+        "stages": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "skip_connections": true,
+        "wfem_channels": 32
+      },
+      "dcconv": {
+        "kernel_length": 9,
+        "offset_activation": "tanh",
+        "angle_activation": "sigmoid",
+        "angle_max": 1.5707963267948966
+      },
+      "architecture_mode": "temporal"
+    },
+    "data": {
+      "image_size": 224,
+      "train_frames_per_video": 8,
+      "eval_frames_per_video": 32,
+      "train_crop_margin": [
+        0.04,
+        0.2
+      ],
+      "eval_crop_margin": 0.125,
+      "multi_face_policy": "max_fakeness",
+      "train": {
+        "dataset": "self_created",
+        "split": "train",
+        "real_only": false,
+        "compression": null,
+        "augmentation_profile": "default"
+      },
+      "num_workers": 4,
+      "prefetch_factor": 2,
+      "pin_memory": true,
+      "persistent_workers": true
+    },
+    "sbi": {
+      "enabled": false,
+      "landmark_predictor": "/home/dgx-s-bmu-cse-240577/research/checkpoints/pretrained/shape_predictor_81_face_landmarks.dat",
+      "stg_transforms": [
+        "RGBShift",
+        "HueSaturationValue",
+        "RandomBrightnessContrast",
+        "Downscale",
+        "Sharpen"
+      ],
+      "real_transforms": [
+        "ImageCompression",
+        "RGBShift",
+        "HueSaturationValue",
+        "RandomBrightnessContrast"
+      ]
+    },
+    "train": {
+      "optimizer": "adamw",
+      "lr": 5e-06,
+      "weight_decay": 0.05,
+      "epochs": 30,
+      "lr_schedule": "linear_decay",
+      "lr_decay_start_epoch": 15,
+      "loss": "cross_entropy",
+      "micro_batch_size": 32,
+      "grad_accum_steps": 2,
+      "effective_batch_size": 64,
+      "vram_budget_gib": 14.0,
+      "amp": "bf16",
+      "grad_checkpointing": false,
+      "clip_grad_norm": 1.0,
+      "ckpt_every_epochs": 2,
+      "keep_last_n_ckpts": 3,
+      "resume": "auto",
+      "heartbeat_sec": 300,
+      "canary_every_steps": 500,
+      "log_every_steps": 50,
+      "early_stopping": {
+        "metric": "val_auc",
+        "mode": "max",
+        "patience": 10
+      }
+    },
+    "eval": {
+      "metric": "video_auc",
+      "cross_dataset": [],
+      "cross_manipulation": [],
+      "batch_size": 32,
+      "protocol": "within_dataset",
+      "splits": [
+        "val",
+        "test"
+      ],
+      "val_frames_per_video": 8,
+      "test_frames_per_video": 32
+    },
+    "phase2": {
+      "enabled": true,
+      "data_dir": "/home/dgx-s-bmu-cse-240577/research/data/self_created",
+      "init_from": "/home/dgx-s-bmu-cse-240577/research/checkpoints/lavdf/best/model.safetensors"
+    }
+  },
+  "git_commit": "unknown",
+  "lockfile_sha256": "69031bc35ce85cf7476886d17553045b046fc502ee15260e0eaa853a22887238",
+  "spot_checksum": {
+    "classifier.bias": 2.5458517484366894e-05,
+    "spatial_backbone.backbone.vssm.layers.1.blocks.0.op.in_proj.weight": -2.0254554748535156,
+    "spatial_backbone.backbone.vssm.layers.2.blocks.1.op.x_proj_weight": 123.03060150146484,
+    "spatial_backbone.backbone.vssm.layers.2.blocks.13.norm2.weight": 488.0362548828125,
+    "spatial_backbone.backbone.vssm.layers.2.blocks.3.op.out_norm.weight": 484.8946228027344,
+    "spatial_backbone.backbone.vssm.layers.2.blocks.7.norm.weight": 551.920166015625,
+    "spatial_backbone.backbone.vssm.layers.3.blocks.0.op.Ds": 4811.95947265625,
+    "spatial_backbone.hwfeb.wfems.2.dc_x.offset_conv.weight": 0.6657398343086243
+  },
+  "saved_at": "2026-08-12T20:04:40"
+}

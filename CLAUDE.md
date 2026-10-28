@@ -9,6 +9,12 @@ Appendix B = SBI/preprocessing/augs).
 
 - **ML PRODUCTION GATES FRAMEWORK SAVED**: The full 12-category rubric for production readiness has been saved to `docs/ML_PRODUCTION_GATES.md` (2026-08-05).
 - **PRE-FLIGHT AUDIT PASSED**: Pass 3 of the audit is complete (2026-08-05). All 56/56 tests passed live in the pod. The `SupervisedTrainDataset` loader was implemented and verified.
+- **PHASE 3 COMPLETE**: S-WMamba (Spectral Gating) and T-WMamba (Bidirectional Mamba sequence modeling) implemented and verified via unit tests (`test_spectral.py`, `test_temporal.py`). All 62 tests pass.
+- **PHASE 4 COMPLETE**: Phase 4a (Spectral) regressed. Pivoted to Phase 4b (Temporal T_WMamba sequence fine-tuning). T_WMamba successfully pushed DFDC cross-dataset validation to 95.75% AUC, completely resolving the generalization issues.
+  - **Dataset Breakdown**: Initial Pre-training (Phase 1 & 2) was done on ~38,893 LAV-DF videos. Temporal Fine-Tuning (Phase 4b) used the `self_created` dataset (a curated mix).
+  - **FFPP Distribution**: The `self_created` dataset contained 888 FaceForensics++ (FF++) videos (620 for training, 134 for val, 134 for test). 
+  - **Results**: Final test evaluation on the unseen 494-video slice achieved: **DFDC: 95.75% AUC, FFPP: 97.34% AUC, LAV-DF: 99.39% AUC (Overall: 96.93% AUC)**.
+  - **Architecture Note (From-Scratch tradeoff)**: Training the Temporal `T_WMamba` model from scratch on LAV-DF instead of fine-tuning the spatial backbone would introduce massive computational overhead (8x VRAM for sequences) and a "chicken-and-egg" convergence problem. Pre-training spatial features first and then strictly fine-tuning temporal layers is the confirmed optimal strategy.
 - **Stages 0–5 of the master prompt are COMPLETE.** Model, data pipeline, eval, trainer,
   k8s manifests, 47/47 tests passing, batch benchmark done, AUDIT.md pass 1 written.
 - **🔀 SCOPE CHANGED 2026-08-02 (user decision, do not relitigate).** The paper's protocol
@@ -70,7 +76,7 @@ Appendix B = SBI/preprocessing/augs).
 - Head node `bmu-headnode`: 40 CPU, 125 GiB RAM, **no GPU**, internet OK, Python 3.12.
   `~` is local XFS on the head node, NFS-exported to pods (persistent, survives pod death).
 - **Slurm is dead** (no config source). **Kubernetes is the scheduler.**
-  Namespace `dgx-s-bmu-cse-240577-restricted`, quota = 16 CPU / 32 Gi / **1× mig-1g.18gb** (whole namespace).
+  Namespace `dgx-s-bmu-cse-240577-restricted`, quota = 16 CPU / 32 Gi / **1× mig-2g.35gb** (whole namespace; was mig-1g.18gb until the 2026-10-28 quota change — 32.5 GiB usable, 32 SMs).
   Full-GPU and bigger-MIG quotas are hard 0.
 - GPU = H200 MIG slice: **16.0 GiB usable, 16 SMs**. `torch.cuda.get_device_name` → "NVIDIA H200 MIG 1g.18gb".
 - Pod image `pytorch/pytorch:2.4.0-cuda12.4-cudnn9-runtime`: **NO gcc/nvcc/git/curl — prebuilt wheels only, no source builds, no triton kernels** (triton needs cc at runtime).

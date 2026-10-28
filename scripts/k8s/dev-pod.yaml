@@ -1,6 +1,6 @@
 # Interactive workspace pod for WMamba development.
 #
-# Claims the ENTIRE namespace quota (16 CPU / 32 Gi / 1x mig-1g.18gb), because that
+# Claims the ENTIRE namespace quota (16 CPU / 32 Gi / 1x mig-2g.35gb), because that
 # is all there is -- see docs/ENVIRONMENT.md. While this is running, no training Job
 # can be scheduled. Delete it before submitting Phase 1 training:
 #
@@ -52,8 +52,8 @@ spec:
             - {name: TORCH_HOME,    value: /home/dgx-s-bmu-cse-240577/.cache/torch}
             - {name: HF_HOME,       value: /home/dgx-s-bmu-cse-240577/.cache/huggingface}
           resources:
-            requests: {cpu: "16", memory: 32Gi, nvidia.com/mig-1g.18gb: "1"}
-            limits:   {cpu: "16", memory: 32Gi, nvidia.com/mig-1g.18gb: "1"}
+            requests: {cpu: "16", memory: 32Gi, nvidia.com/mig-2g.35gb: "1"}
+            limits:   {cpu: "16", memory: 32Gi, nvidia.com/mig-2g.35gb: "1"}
           volumeMounts:
             - {name: home, mountPath: /home/dgx-s-bmu-cse-240577}
             - {name: dshm, mountPath: /dev/shm}
